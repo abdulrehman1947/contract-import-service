@@ -65,6 +65,13 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
             const duree = parseInt(row['duree']) || 0;
             const vendeur = String(row['vendeur'] || '').trim();
 
+            // Extra client info for auto-creation
+            const nomClient = String(row['Nom de client'] || '').trim();
+            const prenomClient = String(row['Prenom de client'] || '').trim();
+            const telClient = String(row['N de tel'] || '').trim();
+            const scoreCreditsafe = String(row['Score Creditsafe'] || '').trim();
+            const scoreEllipro = String(row['Score Ellipro'] || '').trim();
+
             if (!rawCompteur || !rawType) {
                 logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'ERROR', message: 'Missing Meter number or Energy Type' });
                 continue;
@@ -80,12 +87,30 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                     [siren || null, emailClient || null, raisonSociale, raisonSociale]
                 );
 
+                let client;
                 if (clients.length === 0) {
-                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'ERROR', message: 'Client not found in database. Manual creation required.' });
-                    await connection.rollback();
-                    continue;
+                    // --- CREATE CLIENT IF NOT EXISTS ---
+                    const [newClientResult]: any = await connection.execute(
+                        `INSERT INTO clients (
+                            society, trade_name, raison, score_credit_safe, score_ellipro,
+                            last_name, first_name, phone, email, siren,
+                            flag, created_by, created_on
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
+                        [
+                            raisonSociale, raisonSociale, raisonSociale, scoreCreditsafe, scoreEllipro,
+                            nomClient, prenomClient, telClient, emailClient, siren
+                        ]
+                    );
+                    
+                    const newClientId = newClientResult.insertId;
+                    
+                    // Fetch the created client to populate the snapshot correctly
+                    let [newClients]: any = await connection.execute(`SELECT * FROM clients WHERE id = ?`, [newClientId]);
+                    client = newClients[0];
+                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'New client created automatically.' });
+                } else {
+                    client = clients[0];
                 }
-                const client = clients[0];
 
                 // 2. FIND EMPLOYEE
                 let [employees]: any = await connection.execute(
@@ -109,7 +134,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                     await connection.execute(
                         `INSERT INTO client_histories (client_id, ${meterCol}, type, car_in_mwh, current_contract_expiry_date, contract_case, current_supplier_name, flag, created_by, created_on) 
                          VALUES (?, ?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), 'SupplierChange', ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
-                        [client.id, rawCompteur, rawType, consommation, dateFF, fournisseur]
+                        [client.id, rawCompteur, isElec ? 'ELECTRICITY' : 'GAS', consommation, dateFF, fournisseur]
                     );
                     logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Meter ${rawCompteur} added to client history.` });
                 }
