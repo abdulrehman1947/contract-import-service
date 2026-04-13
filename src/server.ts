@@ -4,6 +4,7 @@ import * as xlsx from 'xlsx';
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import axios from 'axios';
 
 dotenv.config();
 
@@ -36,7 +37,41 @@ interface ImportLog {
     status: 'SUCCESS' | 'WARNING' | 'ERROR' | 'SKIPPED';
     message: string;
 }
+// Helper to fetch INSEE Data
+async function fetchInseeData(siret: string) {
+    if (!siret || siret.length !== 14) return null;
+    
+    try {
+        const response = await axios.get(`https://api.insee.fr/api-sirene/3.11/siret/${siret}`, {
+            headers: {
+                "X-INSEE-Api-Key-Integration": process.env.INSEE_API_KEY,
+                "Accept": "application/json"
+            },
+            timeout: 5000 
+        });
 
+        const est = response.data?.etablissement;
+        if (!est) return null;
+
+        const addr = est.adresseEtablissement;
+        const street = [
+            addr?.numeroVoieEtablissement,
+            addr?.indiceRepetitionEtablissement,
+            addr?.typeVoieEtablissement,
+            addr?.libelleVoieEtablissement
+        ].filter(Boolean).join(" ");
+
+        return {
+            society: est.uniteLegale?.denominationUniteLegale || null,
+            nafCode: est.uniteLegale?.activitePrincipaleUniteLegale || null,
+            street: street,
+            city: addr?.libelleCommuneEtablissement || null,
+            postalCode: addr?.codePostalEtablissement || null
+        };
+    } catch (error: any) {
+        return null;
+    }
+}
 app.post('/api/import-excel', upload.single('file'), async (req: Request, res: Response) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
@@ -59,7 +94,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
             const rawType = String(row['type'] || '').trim().toUpperCase();
             const raisonSociale = String(row['raison sociale'] || '').trim();
             const emailClient = String(row['Email Client'] || '').trim();
-            const siren = String(row['siren'] || '').trim(); // Fallback column if added
+            const siren = String(row['siren'] ||row['siret'] || '').trim(); // Fallback column if added
             const fournisseur = String(row['fournisseur'] || '').trim();
             const dateDF = String(row['dateDF'] || '').trim();
             const dateFF = String(row['dateFF'] || '').trim();
@@ -83,6 +118,9 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
             }
             console.log(`Processing row ${rowNum}: Compteur=${rawCompteur}, Type=${rawType}, Raison Sociale=${raisonSociale}`);
             try {
+
+                // FETCH INSEE DATA BEFORE TRANSACTION
+                const insee = await fetchInseeData(siren);
                 await connection.beginTransaction();
 
                 // 1. FIND CLIENT (Logic: Siren > Email > Society Name)
@@ -95,24 +133,39 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 let client;
                 if (clients.length === 0) {
                     // --- CREATE CLIENT IF NOT EXISTS ---
+                    // Create Client using INSEE fallbacks
                     const [newClientResult]: any = await connection.execute(
                         `INSERT INTO clients (
                             society, trade_name, raison, score_credit_safe, score_ellipro,
                             last_name, first_name, phone, email, siren,
+                            street, city, postal_code, country, naf_code,
                             flag, created_by, created_on
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
                         [
-                            raisonSociale, raisonSociale, raisonSociale, scoreCreditsafe, scoreEllipro,
-                            nomClient, prenomClient, telClient, emailClient, siren
+                            insee?.society || raisonSociale, 
+                            insee?.society || raisonSociale, 
+                            raisonSociale, 
+                            row['Score Creditsafe'] || '', 
+                            row['Score Ellipro'] || '',
+                            nomClient, prenomClient, telClient, emailClient, siren,
+                            insee?.street || '', insee?.city || '', insee?.postalCode || '', insee?.nafCode || ''
                         ]
                     );
                     
                     const newClientId = newClientResult.insertId;
-                    
+                     // Create Contact Record (Crucial for DB consistency)
+                    await connection.execute(
+                        `INSERT INTO client_contact (
+                            client_id, first_name, last_name, email, phone, mobile_phone, 
+                            job_function, civility, flag, created_by, created_on
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
+                        [newClientId, prenomClient, nomClient, emailClient, telClient, telClient]
+                    );
                     // Fetch the created client to populate the snapshot correctly
                     let [newClients]: any = await connection.execute(`SELECT * FROM clients WHERE id = ?`, [newClientId]);
                     client = newClients[0];
-                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'New client created automatically.' });
+                    // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'New client created automatically.' });
+                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: insee ? 'Client created with INSEE data.' : 'Client created (INSEE not found).' });
                 } else {
                     client = clients[0];
                 }
