@@ -83,6 +83,8 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
     const data: any[] = xlsx.utils.sheet_to_json(sheet);
 
     const connection = await pool.getConnection();
+    // Use provided default employee id from the form-data if present, otherwise fall back to legacy id
+    const defaultEmployeeId: number = parseInt(String(req.body?.defaultEmployeeId || ''), 10) || 184443;
 
     try {
         for (let i = 0; i < data.length; i++) {
@@ -104,6 +106,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
             const brut = String(row['brut'] || '0').replace(',', '.');
             const duree = parseInt(row['duree']) || 0;
             const vendeur = String(row['vendeur'] || '').trim();
+            const signedContractDate = String(row['date'] || '').trim();
 
             // Extra client info for auto-creation
             const nomClient = String(row['Nom de client'] || '').trim();
@@ -139,8 +142,8 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                             society, trade_name, raison, score_credit_safe, score_ellipro,
                             last_name, first_name, phone, email, siren,
                             street, city, postal_code, country, naf_code,
-                            flag, created_by, created_on
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
+                            flag, created_by, created_on, updated_on, type
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', ?, NOW(), 'CLIENT')`,
                         [
                             insee?.society || raisonSociale, 
                             insee?.society || raisonSociale, 
@@ -148,7 +151,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                             row['Score Creditsafe'] || '', 
                             row['Score Ellipro'] || '',
                             nomClient, prenomClient, telClient, emailClient, siren,
-                            insee?.street || '', insee?.city || '', insee?.postalCode || '', insee?.nafCode || ''
+                            insee?.street || '', insee?.city || '', insee?.postalCode || '', insee?.nafCode || '', signedContractDate
                         ]
                     );
                     
@@ -157,9 +160,9 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                     await connection.execute(
                         `INSERT INTO client_contact (
                             client_id, first_name, last_name, email, phone, mobile_phone, 
-                            job_function, civility, flag, created_by, created_on
-                        ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
-                        [newClientId, prenomClient, nomClient, emailClient, telClient, telClient]
+                            job_function, civility, flag, created_by, created_on, updated_on
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', ?, NOW())`,
+                        [newClientId, prenomClient, nomClient, emailClient, telClient, telClient, signedContractDate]
                     );
                     // Fetch the created client to populate the snapshot correctly
                     let [newClients]: any = await connection.execute(`SELECT * FROM clients WHERE id = ?`, [newClientId]);
@@ -176,8 +179,8 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                      OR TRIM(REPLACE(?, '  ', ' ')) = CONCAT(name, ' ', first_name) LIMIT 1`,
                     [vendeur, vendeur]
                 );
-                const employeeId = employees.length > 0 ? employees[0].id : 184443;
-                console.log(`Matched Employee ID: ${employeeId} for Vendeur: ${vendeur}`);
+                const employeeId = employees.length > 0 ? employees[0].id : defaultEmployeeId;
+                console.log(`Matched Employee ID: ${employeeId} for Vendeur: ${vendeur} (default ${defaultEmployeeId})`);
 
                 // 3. CHECK METER EXISTENCE (client_histories)
                 const isElec = rawType.includes('ELEC');
@@ -229,15 +232,15 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                         created_by, created_on, flag, status, client_id, employee_id, client_snapshot_id,
                         type, ${contractMeterCol}, car_in_mwh, consumption_inmwh, total_consumption,
                         current_supplier_name, start_date, contract_end_date, current_contract_expiry_date, 
-                        signed_contract_date, desired_duration, margin_volt, volt_unit_margin, contract_case
+                        signed_contract_date, desired_duration, margin_volt, volt_unit_margin, contract_case, updated_on
                     ) VALUES (
-                        'EXCEL_IMPORT', NOW(), 'ACTIVE', 'PARTNER_VERIFIED', ?, ?, ?, 
+                        'EXCEL_IMPORT', ?, 'ACTIVE', 'PARTNER_VERIFIED', ?, ?, ?, 
                         ?, ?, ?, ?, ?, ?, 
                         STR_TO_DATE(?, '%d/%m/%Y'), STR_TO_DATE(?, '%d/%m/%Y'), STR_TO_DATE(?, '%d/%m/%Y'),
-                        STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'SupplierChange'
+                        STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'SupplierChange', NOW()
                     )`,
                     [
-                        client.id, employeeId, snapshotId,
+                        signedContractDate, client.id, employeeId, snapshotId,
                         isElec ? 'ELECTRICITY' : 'GAS', rawCompteur, consommation, consommation, consommation,
                         fournisseur, dateDF, dateFF, dateFF, excelDate, duree, brut, marge
                     ]
