@@ -143,7 +143,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                             last_name, first_name, phone, email, siren,
                             street, city, postal_code, country, naf_code,
                             flag, created_by, created_on, updated_on, type
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', ?, NOW(), 'CLIENT')`,
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), NOW(), 'CLIENT')`,
                         [
                             insee?.society || raisonSociale, 
                             insee?.society || raisonSociale, 
@@ -161,7 +161,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                         `INSERT INTO client_contact (
                             client_id, first_name, last_name, email, phone, mobile_phone, 
                             job_function, civility, flag, created_by, created_on, updated_on
-                        ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', ?, NOW())`,
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), NOW())`,
                         [newClientId, prenomClient, nomClient, emailClient, telClient, telClient, signedContractDate]
                     );
                     // Fetch the created client to populate the snapshot correctly
@@ -234,7 +234,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                         current_supplier_name, start_date, contract_end_date, current_contract_expiry_date, 
                         signed_contract_date, desired_duration, margin_volt, volt_unit_margin, contract_case, updated_on
                     ) VALUES (
-                        'EXCEL_IMPORT', ?, 'ACTIVE', 'PARTNER_VERIFIED', ?, ?, ?, 
+                        'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), 'ACTIVE', 'PARTNER_VERIFIED', ?, ?, ?, 
                         ?, ?, ?, ?, ?, ?, 
                         STR_TO_DATE(?, '%d/%m/%Y'), STR_TO_DATE(?, '%d/%m/%Y'), STR_TO_DATE(?, '%d/%m/%Y'),
                         STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'SupplierChange', NOW()
