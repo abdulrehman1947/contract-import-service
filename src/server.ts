@@ -126,6 +126,21 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 const insee = await fetchInseeData(siren);
                 await connection.beginTransaction();
 
+                 // C. PRE-CHECK: DOES AN ACTIVE CONTRACT ALREADY EXIST?
+                // We check this BEFORE reactivating clients or meters to avoid log/db mismatch
+                const isElec = rawType.includes('ELEC');
+                const contractMeterCol = isElec ? 'pdl' : 'pce_number';
+                let [existingContracts]: any = await connection.execute(
+                    `SELECT id, status FROM contracts WHERE ${contractMeterCol} = ?`, [rawCompteur]
+                );
+                 if (existingContracts.length > 0) {
+                    const existingStatus = existingContracts[0].status;
+                    if (['PARTNER_VERIFIED', 'CANCELLED'].includes(existingStatus)) {
+                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SKIPPED', message: `Meter ${rawCompteur} already has a ${existingStatus} contract. Row skipped.` });
+                        await connection.rollback();
+                        continue;
+                    }
+                }
                 // 1. FIND CLIENT (Logic: Siren > Email > Society Name)
                  let [clients]: any = await connection.execute(
                     `SELECT id, flag, society, email, first_name, last_name, phone, siren, city, country, postal_code, street 
@@ -192,7 +207,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 console.log(`Matched Employee ID: ${employeeId} for Vendeur: ${vendeur} (default ${defaultEmployeeId})`);
 
                 // 3. CHECK METER EXISTENCE (client_histories)
-                const isElec = rawType.includes('ELEC');
+                // const isElec = rawType.includes('ELEC');
                 const meterCol = isElec ? 'pdl' : 'pce';
                 
                 let [histories]: any = await connection.execute(
@@ -214,19 +229,19 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 }
 
                 // 4. CHECK CONTRACT STATUS
-                const contractMeterCol = isElec ? 'pdl' : 'pce_number';
-                let [contracts]: any = await connection.execute(
-                    `SELECT id, status FROM contracts WHERE ${contractMeterCol} = ?`, [rawCompteur]
-                );
+                // const contractMeterCol = isElec ? 'pdl' : 'pce_number';
+                // let [contracts]: any = await connection.execute(
+                //     `SELECT id, status FROM contracts WHERE ${contractMeterCol} = ?`, [rawCompteur]
+                // );
 
-                if (contracts.length > 0) {
-                    const existingStatus = contracts[0].status;
-                    if (['PARTNER_VERIFIED', 'CANCELLED'].includes(existingStatus)) {
-                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SKIPPED', message: `Meter ${rawCompteur} already has a ${existingStatus} contract.` });
-                        await connection.rollback();
-                        continue;
-                    }
-                }
+                // if (contracts.length > 0) {
+                //     const existingStatus = contracts[0].status;
+                //     if (['PARTNER_VERIFIED', 'CANCELLED'].includes(existingStatus)) {
+                //         logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SKIPPED', message: `Meter ${rawCompteur} already has a ${existingStatus} contract.` });
+                //         await connection.rollback();
+                //         continue;
+                //     }
+                // }
 
                 // 5. CREATE CLIENT SNAPSHOT
                 const [snapResult]: any = await connection.execute(
