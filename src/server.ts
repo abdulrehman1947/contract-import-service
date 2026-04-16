@@ -84,7 +84,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
 
     const connection = await pool.getConnection();
     // Use provided default employee id from the form-data if present, otherwise fall back to legacy id
-    const defaultEmployeeId: number = parseInt(String(req.body?.defaultEmployeeId || ''), 10) || 184443;
+    const defaultEmployeeId: number = parseInt(String(req.body?.defaultEmployeeId || ''), 10) ;
 
     try {
         for (let i = 0; i < data.length; i++) {
@@ -127,8 +127,9 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 await connection.beginTransaction();
 
                 // 1. FIND CLIENT (Logic: Siren > Email > Society Name)
-                let [clients]: any = await connection.execute(
-                    `SELECT id, society, email, first_name, last_name, phone, siren, city, country, postal_code, street FROM clients 
+                 let [clients]: any = await connection.execute(
+                    `SELECT id, flag, society, email, first_name, last_name, phone, siren, city, country, postal_code, street 
+                     FROM clients 
                      WHERE (siren = ? AND siren != '') OR (email = ? AND email != '') OR (society = ?) OR (raison = ?) LIMIT 1`,
                     [siren || null, emailClient || null, raisonSociale, raisonSociale]
                 );
@@ -171,6 +172,14 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                     logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: insee ? 'Client created with INSEE data.' : 'Client created (INSEE not found).' });
                 } else {
                     client = clients[0];
+                     // --- REACTIVATION CHECK FOR CLIENT ---
+                    if (client.flag === 'DELETED') {
+                        await connection.execute(`UPDATE clients SET flag = 'ACTIVE', updated_on = NOW() WHERE id = ?`, [client.id]);
+                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'Existing Deleted Client reactivated.' });
+                        
+                        // Also check if its contact is deleted and reactivate it
+                        // await connection.execute(`UPDATE client_contact SET flag = 'ACTIVE', updated_on = NOW() WHERE client_id = ? AND flag = 'DELETED'`, [client.id]);
+                    }
                 }
 
                 // 2. FIND EMPLOYEE
@@ -198,6 +207,10 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                         [client.id, rawCompteur, isElec ? 'ELECTRICITY' : 'GAS', consommation, dateFF, fournisseur]
                     );
                     logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Meter ${rawCompteur} added to client history.` });
+                } else if (histories[0].flag === 'DELETED') {
+                    // --- REACTIVATION CHECK FOR METER ---
+                    await connection.execute(`UPDATE client_histories SET flag = 'ACTIVE', client_id = ?, updated_on = NOW() WHERE id = ?`, [client.id, histories[0].id]);
+                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Deleted Meter ${rawCompteur} reactivated.` });
                 }
 
                 // 4. CHECK CONTRACT STATUS
