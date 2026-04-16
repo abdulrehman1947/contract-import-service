@@ -135,40 +135,66 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
 
                 let client;
                 if (clients.length === 0) {
-                    // --- CREATE CLIENT IF NOT EXISTS ---
-                    // Create Client using INSEE fallbacks
-                    const [newClientResult]: any = await connection.execute(
-                        `INSERT INTO clients (
-                            society, trade_name, raison, score_credit_safe, score_ellipro,
-                            last_name, first_name, phone, email, siren,
-                            street, city, postal_code, country, naf_code,
-                            flag, created_by, created_on, updated_on, type
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), NOW(), 'CLIENT')`,
-                        [
-                            insee?.society || raisonSociale, 
-                            insee?.society || raisonSociale, 
-                            raisonSociale, 
-                            row['Score Creditsafe'] || '', 
-                            row['Score Ellipro'] || '',
-                            nomClient, prenomClient, telClient, emailClient, siren,
-                            insee?.street || '', insee?.city || '', insee?.postalCode || '', insee?.nafCode || '', signedContractDate
-                        ]
+                    // Check if a deleted client exists matching the criteria and reactivate it
+                    let [deletedClients]: any = await connection.execute(
+                        `SELECT id FROM clients WHERE ((siren = ? AND siren != '') OR (email = ? AND email != '') OR (society = ?) OR (raison = ?)) AND flag = 'DELETED' LIMIT 1`,
+                        [siren || null, emailClient || null, raisonSociale, raisonSociale]
                     );
-                    
-                    const newClientId = newClientResult.insertId;
-                     // Create Contact Record (Crucial for DB consistency)
-                    await connection.execute(
-                        `INSERT INTO client_contact (
-                            client_id, first_name, last_name, email, phone, mobile_phone, 
-                            job_function, civility, flag, created_by, created_on, updated_on
-                        ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), NOW())`,
-                        [newClientId, prenomClient, nomClient, emailClient, telClient, telClient, signedContractDate]
-                    );
-                    // Fetch the created client to populate the snapshot correctly
-                    let [newClients]: any = await connection.execute(`SELECT * FROM clients WHERE id = ?`, [newClientId]);
-                    client = newClients[0];
-                    // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'New client created automatically.' });
-                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: insee ? 'Client created with INSEE data.' : 'Client created (INSEE not found).' });
+
+                    if (deletedClients.length > 0) {
+                        const deletedId = deletedClients[0].id;
+                        await connection.execute(`UPDATE clients SET flag = 'ACTIVE', updated_on = NOW() WHERE id = ?`, [deletedId]);
+                        let [reactClients]: any = await connection.execute(`SELECT * FROM clients WHERE id = ?`, [deletedId]);
+                        client = reactClients[0];
+                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'Reactivated deleted client.' });
+                    } else {
+                        // --- CREATE CLIENT IF NOT EXISTS ---
+                        // Create Client using INSEE fallbacks
+                        const [newClientResult]: any = await connection.execute(
+                            `INSERT INTO clients (
+                                society, trade_name, raison, score_credit_safe, score_ellipro,
+                                last_name, first_name, phone, email, siren,
+                                street, city, postal_code, country, naf_code,
+                                flag, created_by, created_on, updated_on, type
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), NOW(), 'CLIENT')`,
+                            [
+                                insee?.society || raisonSociale,
+                                insee?.society || raisonSociale,
+                                raisonSociale,
+                                row['Score Creditsafe'] || '',
+                                row['Score Ellipro'] || '',
+                                nomClient, prenomClient, telClient, emailClient, siren,
+                                insee?.street || '', insee?.city || '', insee?.postalCode || '', insee?.nafCode || '', signedContractDate
+                            ]
+                        );
+
+                        const newClientId = newClientResult.insertId;
+
+                        // Check for deleted contact for this client and reactivate it, otherwise create one
+                        let [deletedContacts]: any = await connection.execute(
+                            `SELECT id FROM client_contact WHERE client_id = ? AND (email = ? OR phone = ? OR (first_name = ? AND last_name = ?)) AND flag = 'DELETED' LIMIT 1`,
+                            [newClientId, emailClient, telClient, prenomClient, nomClient]
+                        );
+
+                        if (deletedContacts.length > 0) {
+                            const contactId = deletedContacts[0].id;
+                            await connection.execute(`UPDATE client_contact SET flag = 'ACTIVE', updated_on = NOW(), email = ?, phone = ?, first_name = ?, last_name = ? WHERE id = ?`, [emailClient, telClient, prenomClient, nomClient, contactId]);
+                            logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'Reactivated deleted contact.' });
+                        } else {
+                            await connection.execute(
+                                `INSERT INTO client_contact (
+                                    client_id, first_name, last_name, email, phone, mobile_phone, 
+                                    job_function, civility, flag, created_by, created_on, updated_on
+                                ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), NOW())`,
+                                [newClientId, prenomClient, nomClient, emailClient, telClient, telClient, signedContractDate]
+                            );
+                        }
+
+                        // Fetch the created client to populate the snapshot correctly
+                        let [newClients]: any = await connection.execute(`SELECT * FROM clients WHERE id = ?`, [newClientId]);
+                        client = newClients[0];
+                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: insee ? 'Client created with INSEE data.' : 'Client created (INSEE not found).' });
+                    }
                 } else {
                     client = clients[0];
                 }
@@ -191,13 +217,28 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 );
 
                 if (histories.length === 0) {
-                    // Create history record if missing
-                    await connection.execute(
-                        `INSERT INTO client_histories (client_id, ${meterCol}, type, car_in_mwh, current_contract_expiry_date, contract_case, current_supplier_name, flag, created_by, created_on) 
-                         VALUES (?, ?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), 'SupplierChange', ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
-                        [client.id, rawCompteur, isElec ? 'ELECTRICITY' : 'GAS', consommation, dateFF, fournisseur]
+                    // Check for deleted history and reactivate
+                    let [deletedHistories]: any = await connection.execute(
+                        `SELECT id FROM client_histories WHERE ${meterCol} = ? AND flag = 'DELETED' LIMIT 1`,
+                        [rawCompteur]
                     );
-                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Meter ${rawCompteur} added to client history.` });
+
+                    if (deletedHistories.length > 0) {
+                        const histId = deletedHistories[0].id;
+                        await connection.execute(
+                            `UPDATE client_histories SET flag = 'ACTIVE', updated_on = NOW(), client_id = ?, type = ?, car_in_mwh = ?, current_contract_expiry_date = STR_TO_DATE(?, '%d/%m/%Y'), contract_case = 'SupplierChange', current_supplier_name = ? WHERE id = ?`,
+                            [client.id, isElec ? 'ELECTRICITY' : 'GAS', consommation, dateFF, fournisseur, histId]
+                        );
+                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Reactivated deleted history for meter ${rawCompteur}.` });
+                    } else {
+                        // Create history record if missing
+                        await connection.execute(
+                            `INSERT INTO client_histories (client_id, ${meterCol}, type, car_in_mwh, current_contract_expiry_date, contract_case, current_supplier_name, flag, created_by, created_on) 
+                             VALUES (?, ?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), 'SupplierChange', ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
+                            [client.id, rawCompteur, isElec ? 'ELECTRICITY' : 'GAS', consommation, dateFF, fournisseur]
+                        );
+                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Meter ${rawCompteur} added to client history.` });
+                    }
                 }
 
                 // 4. CHECK CONTRACT STATUS
