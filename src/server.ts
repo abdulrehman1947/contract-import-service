@@ -40,7 +40,6 @@ interface ImportLog {
 // Helper to fetch INSEE Data
 async function fetchInseeData(siret: string) {
     if (!siret || siret.length !== 14) return null;
-    
     try {
         const response = await axios.get(`https://api.insee.fr/api-sirene/3.11/siret/${siret}`, {
             headers: {
@@ -49,10 +48,8 @@ async function fetchInseeData(siret: string) {
             },
             timeout: 5000 
         });
-
         const est = response.data?.etablissement;
         if (!est) return null;
-
         const addr = est.adresseEtablissement;
         const street = [
             addr?.numeroVoieEtablissement,
@@ -115,6 +112,8 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
             const scoreCreditsafe = String(row['Score Creditsafe'] || '').trim();
             const scoreEllipro = String(row['Score Ellipro'] || '').trim();
 
+            const rowSuccessMessages: string[] = [];
+
             if (!rawCompteur || !rawType) {
                 logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'ERROR', message: 'Missing Meter number or Energy Type' });
                 continue;
@@ -126,20 +125,18 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 const insee = await fetchInseeData(siren);
                 await connection.beginTransaction();
 
-                 // C. PRE-CHECK: DOES AN ACTIVE CONTRACT ALREADY EXIST?
+                // 1. DUPLICATE CONTRACT CHECK
                 // We check this BEFORE reactivating clients or meters to avoid log/db mismatch
                 const isElec = rawType.includes('ELEC');
                 const contractMeterCol = isElec ? 'pdl' : 'pce_number';
-                let [existingContracts]: any = await connection.execute(
-                    `SELECT id, status FROM contracts WHERE ${contractMeterCol} = ?`, [rawCompteur]
+                const [existingCtrs]: any = await connection.execute(
+                    `SELECT id, status FROM contracts WHERE ${contractMeterCol} = ? AND status IN ('PARTNER_VERIFIED', 'CANCELLED')`, 
+                    [rawCompteur]
                 );
-                 if (existingContracts.length > 0) {
-                    const existingStatus = existingContracts[0].status;
-                    if (['PARTNER_VERIFIED', 'CANCELLED'].includes(existingStatus)) {
-                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SKIPPED', message: `Meter ${rawCompteur} already has a ${existingStatus} contract. Row skipped.` });
-                        await connection.rollback();
-                        continue;
-                    }
+                  if (existingCtrs.length > 0) {
+                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SKIPPED', message: `Active contract (${existingCtrs[0].status}) already exists for meter ${rawCompteur}.` });
+                    await connection.rollback();
+                    continue;
                 }
                 // 1. FIND CLIENT (Logic: Siren > Email > Society Name)
                  let [clients]: any = await connection.execute(
@@ -183,14 +180,13 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                     // Fetch the created client to populate the snapshot correctly
                     let [newClients]: any = await connection.execute(`SELECT * FROM clients WHERE id = ?`, [newClientId]);
                     client = newClients[0];
-                    // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'New client created automatically.' });
-                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: insee ? 'Client created with INSEE data.' : 'Client created (INSEE not found).' });
+                    rowSuccessMessages.push(insee ? "Client created (INSEE)" : "Client created");
                 } else {
                     client = clients[0];
                      // --- REACTIVATION CHECK FOR CLIENT ---
                     if (client.flag === 'DELETED') {
                         await connection.execute(`UPDATE clients SET flag = 'ACTIVE', updated_on = NOW() WHERE id = ?`, [client.id]);
-                        logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'Existing Deleted Client reactivated.' });
+                        rowSuccessMessages.push("Client reactivated");
                         
                         // Also check if its contact is deleted and reactivate it
                         // await connection.execute(`UPDATE client_contact SET flag = 'ACTIVE', updated_on = NOW() WHERE client_id = ? AND flag = 'DELETED'`, [client.id]);
@@ -221,11 +217,13 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                          VALUES (?, ?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), 'SupplierChange', ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
                         [client.id, rawCompteur, isElec ? 'ELECTRICITY' : 'GAS', consommation, dateFF, fournisseur]
                     );
-                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Meter ${rawCompteur} added to client history.` });
+                    // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Meter ${rawCompteur} added to client history.` });
+                    rowSuccessMessages.push("Meter added");
                 } else if (histories[0].flag === 'DELETED') {
                     // --- REACTIVATION CHECK FOR METER ---
                     await connection.execute(`UPDATE client_histories SET flag = 'ACTIVE', client_id = ?, updated_on = NOW() WHERE id = ?`, [client.id, histories[0].id]);
-                    logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Deleted Meter ${rawCompteur} reactivated.` });
+                    // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Deleted Meter ${rawCompteur} reactivated.` });
+                    rowSuccessMessages.push("Meter reactivated");
                 }
 
                 // 4. CHECK CONTRACT STATUS
@@ -275,7 +273,8 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 );
 
                 await connection.commit();
-                logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'Contract created successfully.' });
+                // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'Contract created successfully.' });
+                logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: rowSuccessMessages.length > 0 ? rowSuccessMessages.join(", ") + ". Contract created." : "Contract created." });
 
             } catch (innerErr: any) {
                 await connection.rollback();
