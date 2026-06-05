@@ -69,6 +69,32 @@ async function fetchInseeData(siret: string) {
         return null;
     }
 }
+function parseExcelDate(raw: string): string {
+    if (!raw || raw.trim() === '') return '';
+    const s = raw.trim();
+
+    // Case 1: already dd/mm/yyyy
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) return s;
+
+    // Case 2: Excel serial number (e.g. "45385")
+    const serial = parseInt(s, 10);
+    if (!isNaN(serial) && s === String(serial) && serial > 40000) {
+        const date = new Date(Date.UTC(1899, 11, 30));
+        date.setUTCDate(date.getUTCDate() + serial);
+        const d = String(date.getUTCDate()).padStart(2, '0');
+        const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+        return `${d}/${m}/${date.getUTCFullYear()}`;
+    }
+
+    // Case 3: ISO datetime string from xlsx lib e.g. "2024-02-07 00:00:00" or "2024-02-07T00:00:00.000Z"
+    const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) {
+        return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+    }
+
+    return s; // fallback: pass through and let MySQL error surface it
+}
+ 
 app.post('/api/import-excel', upload.single('file'), async (req: Request, res: Response) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
@@ -95,15 +121,20 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
             const emailClient = String(row['Email Client'] || '').trim();
             const siren = String(row['siren'] ||row['siret'] || '').trim(); // Fallback column if added
             const fournisseur = String(row['fournisseur'] || '').trim();
-            const dateDF = String(row['dateDF'] || '').trim();
-            const dateFF = String(row['dateFF'] || '').trim();
-            const excelDate = String(row['date'] || '').trim();
+            // const dateDF = String(row['dateDF'] || '').trim();
+            // const dateFF = String(row['dateFF'] || '').trim();
+            // const excelDate = String(row['date'] || '').trim();
             const consommation = String(row['consommation'] || '0').replace(',', '.');
             const marge = String(row['marge'] || '0').replace(',', '.');
             const brut = String(row['brut'] || '0').replace(',', '.');
             const duree = parseInt(row['duree']) || 0;
             const vendeur = String(row['vendeur'] || '').trim();
-            const signedContractDate = String(row['date'] || '').trim();
+            // const signedContractDate = String(row['date'] || '').trim();
+
+            const dateDF = parseExcelDate(String(row['dateDF'] || ''));
+            const dateFF = parseExcelDate(String(row['dateFF'] || ''));
+            const excelDate = parseExcelDate(String(row['date'] || ''));
+            const signedContractDate = parseExcelDate(String(row['date'] || ''));
 
             // Extra client info for auto-creation
             const nomClient = String(row['Nom de client'] || '').trim();
