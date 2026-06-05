@@ -103,7 +103,11 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
     const logs: ImportLog[] = [];
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const data: any[] = xlsx.utils.sheet_to_json(sheet);
+    // const data: any[] = xlsx.utils.sheet_to_json(sheet);
+    const data: any[] = xlsx.utils.sheet_to_json(sheet, {
+    raw: false,
+    dateNF: 'dd/mm/yyyy'
+});
 
     const connection = await pool.getConnection();
     // Use provided default employee id from the form-data if present, otherwise fall back to legacy id
