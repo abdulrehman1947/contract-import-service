@@ -125,15 +125,11 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
             const emailClient = String(row['Email Client'] || '').trim();
             const siren = String(row['siren'] ||row['siret'] || '').trim(); // Fallback column if added
             const fournisseur = String(row['fournisseur'] || '').trim();
-            // const dateDF = String(row['dateDF'] || '').trim();
-            // const dateFF = String(row['dateFF'] || '').trim();
-            // const excelDate = String(row['date'] || '').trim();
             const consommation = String(row['consommation'] || '0').replace(',', '.');
             const marge = String(row['marge'] || '0').replace(',', '.');
             const brut = String(row['brut'] || '0').replace(',', '.');
             const duree = parseInt(row['duree']) || 0;
             const vendeur = String(row['vendeur'] || '').trim();
-            // const signedContractDate = String(row['date'] || '').trim();
 
             const dateDF = parseExcelDate(String(row['dateDF'] || ''));
             const dateFF = parseExcelDate(String(row['dateFF'] || ''));
@@ -191,7 +187,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                             last_name, first_name, phone, email, siren,
                             street, city, postal_code, country, naf_code,
                             flag, created_by, created_on, updated_on, type
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), NOW(), 'CLIENT')`,
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'France', ?, 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(NULLIF(?, ''), '%d/%m/%Y'), NOW(), 'CLIENT')`,
                         [
                             insee?.society || raisonSociale, 
                             insee?.society || raisonSociale, 
@@ -204,12 +200,12 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                     );
                     
                     const newClientId = newClientResult.insertId;
-                     // Create Contact Record (Crucial for DB consistency)
+                    // Create Contact Record (Crucial for DB consistency)
                     await connection.execute(
                         `INSERT INTO client_contact (
                             client_id, first_name, last_name, email, phone, mobile_phone, 
                             job_function, civility, flag, created_by, created_on, updated_on
-                        ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), NOW())`,
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'Gérant', 'MR', 'ACTIVE', 'EXCEL_IMPORT', STR_TO_DATE(NULLIF(?, ''), '%d/%m/%Y'), NOW())`,
                         [newClientId, prenomClient, nomClient, emailClient, telClient, telClient, signedContractDate]
                     );
                     // Fetch the created client to populate the snapshot correctly
@@ -238,7 +234,6 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 console.log(`Matched Employee ID: ${employeeId} for Vendeur: ${vendeur} (default ${defaultEmployeeId})`);
 
                 // 3. CHECK METER EXISTENCE (client_histories)
-                // const isElec = rawType.includes('ELEC');
                 const meterCol = isElec ? 'pdl' : 'pce';
                 
                 let [histories]: any = await connection.execute(
@@ -249,34 +244,17 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                     // Create history record if missing
                     await connection.execute(
                         `INSERT INTO client_histories (client_id, ${meterCol}, type, car_in_mwh, current_contract_expiry_date, contract_case, current_supplier_name, flag, created_by, created_on) 
-                         VALUES (?, ?, ?, ?, STR_TO_DATE(?, '%d/%m/%Y'), 'SupplierChange', ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
+                         VALUES (?, ?, ?, ?, STR_TO_DATE(NULLIF(?, ''), '%d/%m/%Y'), 'SupplierChange', ?, 'ACTIVE', 'EXCEL_IMPORT', NOW())`,
                         [client.id, rawCompteur, isElec ? 'ELECTRICITY' : 'GAS', consommation, dateFF, fournisseur]
                     );
-                    // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Meter ${rawCompteur} added to client history.` });
                     rowSuccessMessages.push("Meter added");
                 } else if (histories[0].flag === 'DELETED') {
                     // --- REACTIVATION CHECK FOR METER ---
                     await connection.execute(`UPDATE client_histories SET flag = 'ACTIVE', client_id = ?, updated_on = NOW() WHERE id = ?`, [client.id, histories[0].id]);
-                    // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: `Deleted Meter ${rawCompteur} reactivated.` });
                     rowSuccessMessages.push("Meter reactivated");
                 }
 
-                // 4. CHECK CONTRACT STATUS
-                // const contractMeterCol = isElec ? 'pdl' : 'pce_number';
-                // let [contracts]: any = await connection.execute(
-                //     `SELECT id, status FROM contracts WHERE ${contractMeterCol} = ?`, [rawCompteur]
-                // );
-
-                // if (contracts.length > 0) {
-                //     const existingStatus = contracts[0].status;
-                //     if (['PARTNER_VERIFIED', 'CANCELLED'].includes(existingStatus)) {
-                //         logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SKIPPED', message: `Meter ${rawCompteur} already has a ${existingStatus} contract.` });
-                //         await connection.rollback();
-                //         continue;
-                //     }
-                // }
-
-                // 5. CREATE CLIENT SNAPSHOT
+                // 4. CREATE CLIENT SNAPSHOT
                 const [snapResult]: any = await connection.execute(
                     `INSERT INTO contract_client_snapshots (
                         created_by, created_on, flag, society, email, first_name, last_name, phone, siren, client_id,
@@ -287,7 +265,7 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 );
                 const snapshotId = snapResult.insertId;
 
-                // 6. CREATE CONTRACT
+                // 5. CREATE CONTRACT
                 await connection.execute(
                     `INSERT INTO contracts (
                         created_by, created_on, flag, status, client_id, employee_id, client_snapshot_id,
@@ -295,10 +273,10 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                         current_supplier_name, start_date, contract_end_date, current_contract_expiry_date, 
                         signed_contract_date, desired_duration, margin_volt, volt_unit_margin, contract_case, updated_on
                     ) VALUES (
-                        'EXCEL_IMPORT', STR_TO_DATE(?, '%d/%m/%Y'), 'ACTIVE', 'PARTNER_VERIFIED', ?, ?, ?, 
+                        'EXCEL_IMPORT', STR_TO_DATE(NULLIF(?, ''), '%d/%m/%Y'), 'ACTIVE', 'PARTNER_VERIFIED', ?, ?, ?, 
                         ?, ?, ?, ?, ?, ?, 
-                        STR_TO_DATE(?, '%d/%m/%Y'), STR_TO_DATE(?, '%d/%m/%Y'), STR_TO_DATE(?, '%d/%m/%Y'),
-                        STR_TO_DATE(?, '%d/%m/%Y'), ?, ?, ?, 'SupplierChange', NOW()
+                        STR_TO_DATE(NULLIF(?, ''), '%d/%m/%Y'), STR_TO_DATE(NULLIF(?, ''), '%d/%m/%Y'), STR_TO_DATE(NULLIF(?, ''), '%d/%m/%Y'),
+                        STR_TO_DATE(NULLIF(?, ''), '%d/%m/%Y'), ?, ?, ?, 'SupplierChange', NOW()
                     )`,
                     [
                         signedContractDate, client.id, employeeId, snapshotId,
@@ -308,7 +286,6 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
                 );
 
                 await connection.commit();
-                // logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: 'Contract created successfully.' });
                 logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'SUCCESS', message: rowSuccessMessages.length > 0 ? rowSuccessMessages.join(", ") + ". Contract created." : "Contract created." });
 
             } catch (innerErr: any) {
