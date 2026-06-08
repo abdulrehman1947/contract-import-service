@@ -119,7 +119,16 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
             const rowNum = i + 2; // Excel header is row 1
             
             // Extract and clean Excel data
-            const rawCompteur = String(row['compteur'] || '').trim();
+            // const rawCompteur = String(row['compteur'] || '').trim();
+            const rawCompteur = (() => {
+            const s = String(row['compteur'] || '').trim();
+            // xlsx reads numeric cells as numbers, dropping leading zeros.
+            // French PDL/PCE are always exactly 14 digits, so pad only if short.
+            // If it's already 14+ digits, take it as-is.
+            return s.length > 0 && s.length < 14 && /^\d+$/.test(s)
+                ? s.padStart(14, '0')
+                : s;
+        })();
             const rawType = String(row['type'] || '').trim().toUpperCase();
             const raisonSociale = String(row['raison sociale'] || '').trim();
             const emailClient = String(row['Email Client'] || '').trim();
@@ -145,8 +154,8 @@ app.post('/api/import-excel', upload.single('file'), async (req: Request, res: R
 
             const rowSuccessMessages: string[] = [];
 
-            if (!rawCompteur || !rawType) {
-                logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'ERROR', message: 'Missing Meter number or Energy Type' });
+            if (!rawCompteur || rawCompteur.length !== 14 || !rawType) {
+                logs.push({ row: rowNum, raison_sociale: raisonSociale, status: 'ERROR', message: 'Missing or invalid Meter number (must be 14 digits) or Energy Type' });
                 continue;
             }
             console.log(`Processing row ${rowNum}: Compteur=${rawCompteur}, Type=${rawType}, Raison Sociale=${raisonSociale}`);
